@@ -18,17 +18,29 @@ app.use("/api/transactions", transactionsRouter);
 async function fetchAllTransactions() {
   const all = [];
   let nextUrl = "https://api.up.com.au/api/v1/transactions";
+  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   while (nextUrl) {
-    const response = await axios.get(nextUrl, {
-      headers: { Authorization: `Bearer ${process.env.UP_TOKEN}` },
-    });
+    try {
+      const response = await axios.get(nextUrl, {
+        headers: { Authorization: `Bearer ${process.env.UP_TOKEN}` },
+      });
 
-    all.push(...response.data.data);
-    nextUrl = response.data.links.next || null;
+      all.push(...response.data.data);
+      nextUrl = response.data.links.next || null;
 
-    // avoid hammering API
-    if (nextUrl) await new Promise((r) => setTimeout(r, 200));
+      console.log(`📦 Fetched ${all.length} so far`);
+      if (nextUrl) await delay(1000); // wait 1 second between calls
+    } catch (err) {
+      if (err.response && err.response.status === 429) {
+        const wait = 30_000; // 30 seconds cooldown
+        console.warn(`⏳ Rate limit hit, waiting ${wait / 1000}s…`);
+        await delay(wait);
+        continue; // retry same page
+      } else {
+        throw err;
+      }
+    }
   }
 
   console.log(`✅ Retrieved ${all.length} total transactions`);
