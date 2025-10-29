@@ -1,0 +1,19 @@
+{
+  "name": "up-bank-server",
+  "version": "1.0.0",
+  "description": "Live transaction feed from Up Bank using Node.js, Express, and Axios.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
