@@ -36,25 +36,55 @@ async function fetchAllTransactions() {
 }
 
 // ----------------------------------------------------
+// 🔹 In-memory cache for faster responses
+// ----------------------------------------------------
+let cachedCSV = null;
+let cachedJSON = null;
+let lastFetched = 0; // timestamp (ms)
+
+async function getCachedTransactions() {
+  const now = Date.now();
+  const fifteenMinutes = 15 * 60 * 1000;
+
+  if (cachedJSON && (now - lastFetched) < fifteenMinutes) {
+    console.log("✅ Using cached transactions (JSON/CSV)");
+    return { json: cachedJSON, csv: cachedCSV };
+  }
+
+  console.log("🔄 Fetching fresh transactions from Up API...");
+  const { Parser } = await import("json2csv");
+  const transactions = await fetchAllTransactions();
+
+  const flattened = transactions.map((tx) => ({
+    id: tx.id,
+    createdAt: tx.attributes.createdAt,
+    description: tx.attributes.description,
+    amount: parseFloat(tx.attributes.amount.value),
+    currency: tx.attributes.amount.currencyCode,
+    category: tx.relationships.category?.data?.id || "Uncategorized",
+  }));
+
+  const parser = new Parser();
+  const csv = parser.parse(flattened);
+
+  cachedJSON = flattened;
+  cachedCSV = csv;
+  lastFetched = now;
+
+  console.log("💾 Cached transactions for 15 minutes");
+  return { json: flattened, csv };
+}
+
+// ----------------------------------------------------
 // 🔹 Tableau JSON endpoint (flat structure)
 // ----------------------------------------------------
 app.get("/api/transactions/tableau", async (req, res) => {
   try {
-    const transactions = await fetchAllTransactions();
-
-    const flattened = transactions.map((tx) => ({
-      id: tx.id,
-      createdAt: tx.attributes.createdAt,
-      description: tx.attributes.description,
-      amount: parseFloat(tx.attributes.amount.value),
-      currency: tx.attributes.amount.currencyCode,
-      category: tx.relationships.category?.data?.id || "Uncategorized",
-    }));
-
-    res.json(flattened);
+    const { json } = await getCachedTransactions();
+    res.json(json);
   } catch (err) {
     console.error("❌ Tableau fetch failed:", err.message);
-    res.status(500).json({ error: "Failed to fetch all transactions" });
+    res.status(500).json({ error: "Failed to fetch transactions" });
   }
 });
 
@@ -63,27 +93,13 @@ app.get("/api/transactions/tableau", async (req, res) => {
 // ----------------------------------------------------
 app.get("/api/transactions/csv", async (req, res) => {
   try {
-    const { Parser } = await import("json2csv");
-    const transactions = await fetchAllTransactions();
-
-    const flattened = transactions.map((tx) => ({
-      id: tx.id,
-      createdAt: tx.attributes.createdAt,
-      description: tx.attributes.description,
-      amount: parseFloat(tx.attributes.amount.value),
-      currency: tx.attributes.amount.currencyCode,
-      category: tx.relationships.category?.data?.id || "Uncategorized",
-    }));
-
-    const parser = new Parser();
-    const csv = parser.parse(flattened);
-
+    const { csv } = await getCachedTransactions();
     res.header("Content-Type", "text/csv");
     res.attachment("transactions.csv");
     res.send(csv);
   } catch (err) {
     console.error("❌ CSV export failed:", err.message);
-    res.status(500).json({ error: "Failed to export full CSV" });
+    res.status(500).json({ error: "Failed to export CSV" });
   }
 });
 
@@ -98,6 +114,18 @@ cron.schedule("*/10 * * * *", async () => {
     console.log("🔁 Keep-alive ping sent");
   } catch (err) {
     console.error("⚠️ Keep-alive failed:", err.message);
+  }
+});
+
+// ----------------------------------------------------
+// 🔹 Nightly cache preload (2 AM daily)
+// ----------------------------------------------------
+cron.schedule("0 2 * * *", async () => {
+  try {
+    await axios.get(`${RENDER_URL}/api/transactions/csv`);
+    console.log("🌙 Preloaded transaction cache for morning Tableau refresh");
+  } catch (err) {
+    console.error("⚠️ Nightly preload failed:", err.message);
   }
 });
 
