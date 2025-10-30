@@ -4,7 +4,9 @@ import accountsRouter from "./routes/accounts.js";
 import transactionsRouter from "./routes/transactions.js";
 import cron from "node-cron";
 import axios from "axios";
-import compression from "compression"; // NEW
+import compression from "compression";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 const app = express();
@@ -13,114 +15,57 @@ const app = express();
 // ⚙️ Middleware setup
 // ----------------------------------------------------
 app.use(express.json());
-app.use(compression()); // gzip large responses
+app.use(compression());
 app.use("/api/accounts", accountsRouter);
 app.use("/api/transactions", transactionsRouter);
 
 // ----------------------------------------------------
-// 🔹 Helper: fetch all transactions with pagination
+// 🔹 Load cached transactions from local JSON
 // ----------------------------------------------------
-async function fetchAllTransactions() {
-  const all = [];
-  let nextUrl = "https://api.up.com.au/api/v1/transactions";
-  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const LOCAL_CACHE = path.resolve("./data/transactions_all.json");
 
-  while (nextUrl) {
-    try {
-      const response = await axios.get(nextUrl, {
-        headers: { Authorization: `Bearer ${process.env.UP_TOKEN}` },
-      });
-
-      all.push(...response.data.data);
-      nextUrl = response.data.links.next || null;
-
-      console.log(`📦 Fetched ${all.length} so far`);
-      if (nextUrl) await delay(1000); // 1 sec between calls
-    } catch (err) {
-      if (err.response && err.response.status === 429) {
-        const wait = 45_000; // 45-second cooldown
-        console.warn(`⏳ Rate limit hit, waiting ${wait / 1000}s…`);
-        await delay(wait);
-        continue;
-      } else {
-        throw err;
-      }
-    }
+function loadCachedTransactions() {
+  try {
+    const file = fs.readFileSync(LOCAL_CACHE, "utf-8");
+    const data = JSON.parse(file);
+    console.log(`💾 Loaded ${data.length} cached transactions.`);
+    return data;
+  } catch (err) {
+    console.warn("⚠️ No local cache found or failed to read:", err.message);
+    return [];
   }
-
-  console.log(`✅ Retrieved ${all.length} total transactions`);
-  return all;
 }
 
 // ----------------------------------------------------
-// 🔹 In-memory cache for faster responses
-// ----------------------------------------------------
-let cachedCSV = null;
-let cachedJSON = null;
-let lastFetched = 0; // timestamp (ms)
-
-async function getCachedTransactions() {
-  const now = Date.now();
-  const thirtyMinutes = 30 * 60 * 1000;
-
-  if (cachedJSON && (now - lastFetched) < thirtyMinutes) {
-    console.log("⚡ Serving cached transactions");
-    return { json: cachedJSON, csv: cachedCSV };
-  }
-
-  console.log("🔄 Fetching fresh transactions from Up API...");
-  const { Parser } = await import("json2csv");
-  const transactions = await fetchAllTransactions();
-
-  const flattened = transactions.map((tx) => ({
-    id: tx.id,
-    createdAt: tx.attributes.createdAt,
-    description: tx.attributes.description,
-    amount: parseFloat(tx.attributes.amount.value),
-    currency: tx.attributes.amount.currencyCode,
-    category: tx.relationships.category?.data?.id || "Uncategorized",
-  }));
-
-  const parser = new Parser();
-  const csv = parser.parse(flattened);
-
-  cachedJSON = flattened;
-  cachedCSV = csv;
-  lastFetched = now;
-
-  console.log(`💾 Cached ${flattened.length} transactions for 30 minutes`);
-  return { json: flattened, csv };
-}
-
-// ----------------------------------------------------
-// 🔹 Optimized Tableau JSON endpoint (cached + compressed)
+// 🔹 Serve Tableau JSON (cached)
 // ----------------------------------------------------
 app.get("/api/transactions/tableau", async (req, res) => {
   try {
-    const { json } = await getCachedTransactions();
-    res.json(json);
+    const cached = loadCachedTransactions();
+    res.json(cached);
   } catch (err) {
     console.error("❌ Tableau fetch failed:", err.message);
-    res.status(500).json({ error: "Failed to fetch transactions" });
+    res.status(500).json({ error: "Could not load local data" });
   }
 });
 
 // ----------------------------------------------------
-// 🔹 Optimized CSV export (streaming)
+// 🔹 Serve CSV (cached)
 // ----------------------------------------------------
 app.get("/api/transactions/csv", async (req, res) => {
   try {
-    const { csv } = await getCachedTransactions();
+    const { Parser } = await import("json2csv");
+    const cached = loadCachedTransactions();
+
+    const parser = new Parser();
+    const csv = parser.parse(cached);
 
     res.header("Content-Type", "text/csv");
-    res.header("Content-Disposition", "attachment; filename=transactions.csv");
-
-    // Stream to client
-    res.write(csv);
-    res.end();
+    res.attachment("transactions.csv");
+    res.send(csv);
   } catch (err) {
     console.error("❌ CSV export failed:", err.message);
-    res.status(500).json({ error: "Failed to export CSV" });
+    res.status(500).json({ error: "Could not load CSV" });
   }
 });
 
@@ -131,20 +76,21 @@ const RENDER_URL = "https://up-bank-server.onrender.com";
 
 cron.schedule("*/10 * * * *", async () => {
   try {
-    await axios.get(`${RENDER_URL}/api/accounts`);
-    console.log("🔁 Keep-alive ping sent");
+    // Ping your own app, not the Up API
+    await axios.get(`${RENDER_URL}/api/transactions/tableau`);
+    console.log("🔁 Keep-alive ping sent (cached route)");
   } catch (err) {
     console.error("⚠️ Keep-alive failed:", err.message);
   }
 });
 
 // ----------------------------------------------------
-// 🔹 Nightly cache preload (2 AM daily)
+// 🔹 Nightly preload (optional: keep cache warm for morning Tableau refresh)
 // ----------------------------------------------------
 cron.schedule("0 2 * * *", async () => {
   try {
     await axios.get(`${RENDER_URL}/api/transactions/csv`);
-    console.log("🌙 Preloaded transaction cache for morning Tableau refresh");
+    console.log("🌙 Preloaded cached CSV for Tableau morning refresh");
   } catch (err) {
     console.error("⚠️ Nightly preload failed:", err.message);
   }
