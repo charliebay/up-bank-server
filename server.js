@@ -4,11 +4,16 @@ import accountsRouter from "./routes/accounts.js";
 import transactionsRouter from "./routes/transactions.js";
 import cron from "node-cron";
 import axios from "axios";
+import compression from "compression"; // NEW
 
 dotenv.config();
 const app = express();
 
+// ----------------------------------------------------
+// ⚙️ Middleware setup
+// ----------------------------------------------------
 app.use(express.json());
+app.use(compression()); // gzip large responses
 app.use("/api/accounts", accountsRouter);
 app.use("/api/transactions", transactionsRouter);
 
@@ -30,13 +35,13 @@ async function fetchAllTransactions() {
       nextUrl = response.data.links.next || null;
 
       console.log(`📦 Fetched ${all.length} so far`);
-      if (nextUrl) await delay(1000); // wait 1 second between calls
+      if (nextUrl) await delay(1000); // 1 sec between calls
     } catch (err) {
       if (err.response && err.response.status === 429) {
-        const wait = 30_000; // 30 seconds cooldown
+        const wait = 45_000; // 45-second cooldown
         console.warn(`⏳ Rate limit hit, waiting ${wait / 1000}s…`);
         await delay(wait);
-        continue; // retry same page
+        continue;
       } else {
         throw err;
       }
@@ -56,10 +61,10 @@ let lastFetched = 0; // timestamp (ms)
 
 async function getCachedTransactions() {
   const now = Date.now();
-  const fifteenMinutes = 15 * 60 * 1000;
+  const thirtyMinutes = 30 * 60 * 1000;
 
-  if (cachedJSON && (now - lastFetched) < fifteenMinutes) {
-    console.log("✅ Using cached transactions (JSON/CSV)");
+  if (cachedJSON && (now - lastFetched) < thirtyMinutes) {
+    console.log("⚡ Serving cached transactions");
     return { json: cachedJSON, csv: cachedCSV };
   }
 
@@ -83,12 +88,12 @@ async function getCachedTransactions() {
   cachedCSV = csv;
   lastFetched = now;
 
-  console.log("💾 Cached transactions for 15 minutes");
+  console.log(`💾 Cached ${flattened.length} transactions for 30 minutes`);
   return { json: flattened, csv };
 }
 
 // ----------------------------------------------------
-// 🔹 Tableau JSON endpoint (flat structure)
+// 🔹 Optimized Tableau JSON endpoint (cached + compressed)
 // ----------------------------------------------------
 app.get("/api/transactions/tableau", async (req, res) => {
   try {
@@ -101,14 +106,18 @@ app.get("/api/transactions/tableau", async (req, res) => {
 });
 
 // ----------------------------------------------------
-// 🔹 CSV export (for Tableau Public Web import)
+// 🔹 Optimized CSV export (streaming)
 // ----------------------------------------------------
 app.get("/api/transactions/csv", async (req, res) => {
   try {
     const { csv } = await getCachedTransactions();
+
     res.header("Content-Type", "text/csv");
-    res.attachment("transactions.csv");
-    res.send(csv);
+    res.header("Content-Disposition", "attachment; filename=transactions.csv");
+
+    // Stream to client
+    res.write(csv);
+    res.end();
   } catch (err) {
     console.error("❌ CSV export failed:", err.message);
     res.status(500).json({ error: "Failed to export CSV" });

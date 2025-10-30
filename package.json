@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "axios": "^1.13.1",
+    "compression": "^1.8.1",
     "dotenv": "^16.6.1",
     "express": "^4.19.2",
     "json2csv": "^6.0.0-alpha.2",
