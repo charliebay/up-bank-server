@@ -97,6 +97,27 @@ cron.schedule("0 2 * * *", async () => {
 });
 
 // ----------------------------------------------------
+// 🔹 Simple Status Endpoint
+// ----------------------------------------------------
+app.get("/api/status", (req, res) => {
+  try {
+    const stats = fs.statSync(LOCAL_CACHE);
+    const cached = loadCachedTransactions();
+    res.json({
+      server: "Up Bank Server",
+      status: "OK",
+      cacheFile: LOCAL_CACHE,
+      lastModified: stats.mtime,
+      totalTransactions: cached.length,
+      uptimeMinutes: Math.round(process.uptime() / 60),
+    });
+  } catch (err) {
+    console.error("❌ Status check failed:", err.message);
+    res.status(500).json({ error: "Failed to read cache file" });
+  }
+});
+
+// ----------------------------------------------------
 // 🔹 Start the server
 // ----------------------------------------------------
 const PORT = process.env.PORT || 3000;
